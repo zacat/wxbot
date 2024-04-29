@@ -13,6 +13,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -33,8 +34,16 @@ type Message struct {
 	ImgData            string `json:"imgData"`
 }
 
+type PublicMessage struct {
+	Data  []map[string]string `json:"data"`
+	Total int                 `json:"total"`
+	Wxid  string              `json:"wxid"`
+}
+
 func wsClient() {
-	u := url.URL{Scheme: "ws", Host: *addr, Path: "/ws"}
+	// /ws/generalMsg
+	// /ws/publicMsg
+	u := url.URL{Scheme: "ws", Host: *addr, Path: "/ws/publicMsg"}
 	log.Printf("connecting to %s", u.String())
 
 	c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
@@ -46,29 +55,39 @@ func wsClient() {
 	for {
 		_, message, err := c.ReadMessage()
 		if err != nil {
-			log.Println("read:", err)
+			log.Println("ReadMessage:", err)
 			return
 		}
 		log.Printf("recv: %s", message)
 
-		var msg Message
-		json.Unmarshal(message, &msg)
-		log.Printf("msg: %+v\n", msg)
+		// var public_message_map map[string]interface{}
+		// var pm PublicMessage
+
+		// json.Unmarshal(public_message, &public_message_map)
+		// json.Unmarshal(message, &pm)
+
+		// log.Printf("content: %s\n", public_message_map["data"].([]interface{})[0].(map[string]interface{})["Content"])
+		// log.Printf("content: %s\n", pm.Data[0]["Content"])
 	}
 }
 
 func httpServer() {
 	g := gin.Default()
 	g.POST("/callback", func(c *gin.Context) {
-		var msg Message
-
-		err := c.BindJSON(&msg)
+		data, err := c.GetRawData()
 		if err != nil {
-			log.Printf("bind json faild: %s\n", err)
+			log.Printf("GetRawData faild: %s\n", err)
 			return
 		}
+		log.Printf("data: %s\n", data)
 
-		log.Printf("msg: %+v\n", msg)
+		// var msg Message
+		// err := c.BindJSON(&msg)
+		// if err != nil {
+		// 	log.Printf("bind json faild: %s\n", err)
+		// 	return
+		// }
+		// log.Printf("msg: %+v\n", msg)
 	})
 
 	g.Run(*addr)
@@ -95,33 +114,39 @@ func sendFormImg() {
 	// 加入图片二进制
 	h := make(textproto.MIMEHeader)
 	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, escapeQuotes("image"), escapeQuotes(filepath.Base(file.Name()))))
+	// h.Set("Content-Disposition", fmt.Sprintf(`form-data; name=image; filename="%s"`, escapeQuotes(filepath.Base(file.Name()))))
 	h.Set("Content-Type", "image/jpg")
 	part, err := bodyWriter.CreatePart(h)
 	if err != nil {
-		log.Fatalf("CreatePart faild: %s\n", err)
+		log.Fatalf("WriteField faild: %s\n", err)
 	}
 	_, err = io.Copy(part, file)
 	if err != nil {
-		log.Fatalf("CreatePart faild: %s\n", err)
+		log.Fatalf("WriteField faild: %s\n", err)
 	}
 	// 其他字段
 	err = bodyWriter.WriteField("wxid", *wxid)
 	if err != nil {
-		log.Fatalf("CreatePart faild: %s\n", err)
+		log.Fatalf("WriteField faild: %s\n", err)
 	}
 
-	err = bodyWriter.WriteField("path", "D:\\xxxxxxxxxxxxxxxxx")
-	if err != nil {
-		log.Fatalf("CreatePart faild: %s\n", err)
-	}
+	// err = bodyWriter.WriteField("clear", "false")
+	// if err != nil {
+	// 	log.Fatalf("CreatePart faild: %s\n", err)
+	// }
+
+	// err = bodyWriter.WriteField("path", "")
+	// if err != nil {
+	// 	log.Fatalf("CreatePart faild: %s\n", err)
+	// }
 
 	// 填充boundary结尾
 	bodyWriter.Close()
 
 	// 组合创建数据包
-	req, err := http.NewRequest("POST", *addr+"/sendimgmsg", bodyBuff)
+	req, err := http.NewRequest("POST", *addr+"/api/sendimgmsg", bodyBuff)
 	if err != nil {
-		log.Fatalf("CreatePart faild: %s\n", err)
+		log.Fatalf("NewRequest faild: %s\n", err)
 	}
 
 	req.ContentLength = int64(bodyBuff.Len())
@@ -129,12 +154,12 @@ func sendFormImg() {
 
 	response, err := client.Do(req)
 	if err != nil {
-		log.Fatalf("CreatePart faild: %s\n", err)
+		log.Fatalf("client Do faild: %s\n", err)
 	}
 
 	data, err := ioutil.ReadAll(response.Body)
 	if err != nil {
-		log.Fatalf("CreatePart faild: %s\n", err)
+		log.Fatalf("ReadAll faild: %s\n", err)
 	}
 
 	fmt.Printf("form-img send msg response: %s\n", data)
@@ -144,10 +169,11 @@ func sendJsonImg() {
 	var client http.Client
 
 	type ImgInfo struct {
-		Wxid  string `json:"wxid"`
-		Path  string `json:"path"`
-		Image []byte `json:"image"`
-		Clear bool   `json:"clear"`
+		Wxid      string `json:"wxid"`
+		Path      string `json:"path"`
+		Image     []byte `json:"image"`
+		ImageName string `json:"imageName"`
+		Clear     bool   `json:"clear"`
 	}
 
 	data, err := ioutil.ReadFile(*img_path)
@@ -157,9 +183,10 @@ func sendJsonImg() {
 
 	ii := ImgInfo{
 		Wxid: *wxid,
-		Path: "D:\\xxxxxxxxxxxxxxxx",
-		// Image: data,
-		Clear: false,
+		// Path: "D:\\xxxxxxxxxxxxxxxx",
+		Image:     data,
+		ImageName: "1.jpg",
+		Clear:     false,
 	}
 
 	j_data, err := json.Marshal(ii)
@@ -167,21 +194,23 @@ func sendJsonImg() {
 		log.Fatalf("json Marshal faild: %s\n", err)
 	}
 
-	req, err := http.NewRequest("POST", *addr+"/sendimgmsg", bytes.NewReader(j_data))
+	log.Printf("json data: %s\n", j_data)
+
+	req, err := http.NewRequest("POST", *addr+"/api/sendimgmsg", bytes.NewReader(j_data))
 	if err != nil {
-		log.Fatalf("json Marshal faild: %s\n", err)
+		log.Fatalf("NewRequest faild: %s\n", err)
 	}
 	// req.ContentLength = int64(bodyBuff.Len())
 	req.Header.Set("Content-Type", "application/json")
 
 	response, err := client.Do(req)
 	if err != nil {
-		log.Fatalf("json Marshal faild: %s\n", err)
+		log.Fatalf("client Do faild: %s\n", err)
 	}
 
 	data, err = ioutil.ReadAll(response.Body)
 	if err != nil {
-		log.Fatalf("CreatePart faild: %s\n", err)
+		log.Fatalf("ReadAll faild: %s\n", err)
 	}
 
 	fmt.Printf("json-img send msg response: %s\n", data)
@@ -206,30 +235,30 @@ func sendFormFile() {
 	h.Set("Content-Type", "text/plain")
 	part, err := bodyWriter.CreatePart(h)
 	if err != nil {
-		log.Fatalf("CreatePart faild: %s\n", err)
+		log.Fatalf("WriteField faild: %s\n", err)
 	}
 	_, err = io.Copy(part, file)
 	if err != nil {
-		log.Fatalf("CreatePart faild: %s\n", err)
+		log.Fatalf("WriteField faild: %s\n", err)
 	}
 	// 其他字段
 	err = bodyWriter.WriteField("wxid", *wxid)
 	if err != nil {
-		log.Fatalf("CreatePart faild: %s\n", err)
+		log.Fatalf("WriteField faild: %s\n", err)
 	}
 
-	err = bodyWriter.WriteField("path", "D:\\xxxxxxxxxxxxxxxx")
+	err = bodyWriter.WriteField("path", "D:\\temp\\10.txt")
 	if err != nil {
-		log.Fatalf("CreatePart faild: %s\n", err)
+		log.Fatalf("WriteField faild: %s\n", err)
 	}
 
 	// 填充boundary结尾
 	bodyWriter.Close()
 
 	// 组合创建数据包
-	req, err := http.NewRequest("POST", *addr+"/sendfilemsg", bodyBuff)
+	req, err := http.NewRequest("POST", *addr+"/api/sendfilemsg", bodyBuff)
 	if err != nil {
-		log.Fatalf("CreatePart faild: %s\n", err)
+		log.Fatalf("NewRequest faild: %s\n", err)
 	}
 
 	req.ContentLength = int64(bodyBuff.Len())
@@ -237,12 +266,12 @@ func sendFormFile() {
 
 	response, err := client.Do(req)
 	if err != nil {
-		log.Fatalf("CreatePart faild: %s\n", err)
+		log.Fatalf("client Do faild: %s\n", err)
 	}
 
 	data, err := ioutil.ReadAll(response.Body)
 	if err != nil {
-		log.Fatalf("CreatePart faild: %s\n", err)
+		log.Fatalf("ReadAll faild: %s\n", err)
 	}
 
 	fmt.Printf("form-file send msg response: %s\n", data)
@@ -252,7 +281,7 @@ type FileMsg struct {
 	Wxid     string `json:"wxid"`
 	Path     string `json:"path,omitempty"`
 	File     []byte `json:"file"`
-	FileName string `json:"filename"`
+	FileName string `json:"fileName"`
 }
 
 func sendJsonFile() {
@@ -265,9 +294,9 @@ func sendJsonFile() {
 
 	fm := FileMsg{
 		Wxid: *wxid,
-		Path: "D:\\xxxxxxxxxxxxxxxxxxx",
-		// File:     data,
-		// FileName: path.Base(filepath.ToSlash(*file_path)),
+		// Path: "D:\\xxxxxxxxxxxxxxxxxxx",
+		File:     data,
+		FileName: path.Base(filepath.ToSlash(*file_path)),
 		// Clear: false,
 	}
 
@@ -278,31 +307,135 @@ func sendJsonFile() {
 
 	fmt.Printf("j_data: %s\n", j_data)
 
-	req, err := http.NewRequest("POST", *addr+"/sendfilemsg", bytes.NewReader(j_data))
+	req, err := http.NewRequest("POST", *addr+"/api/sendfilemsg", bytes.NewReader(j_data))
 	if err != nil {
-		log.Fatalf("json Marshal faild: %s\n", err)
+		log.Fatalf("NewRequest faild: %s\n", err)
 	}
 	// req.ContentLength = int64(bodyBuff.Len())
 	req.Header.Set("Content-Type", "application/json")
 
 	response, err := client.Do(req)
 	if err != nil {
-		log.Fatalf("json Marshal faild: %s\n", err)
+		log.Fatalf("client Do faild: %s\n", err)
 	}
 
 	data, err = ioutil.ReadAll(response.Body)
 	if err != nil {
-		log.Fatalf("CreatePart faild: %s\n", err)
+		log.Fatalf("ReadAll faild: %s\n", err)
 	}
 
 	fmt.Printf("json-file send msg response: %s\n", data)
 }
 
+type Account struct {
+	CustomAccount       string `json:"customAccount"`
+	Nickname            string `json:"nickname"`
+	Note                string `json:"note"`
+	Pinyin              string `json:"pinyin"`
+	PinyinAll           string `json:"pinyinAll"`
+	ProfilePicture      string `json:"profilePicture"`
+	ProfilePictureSmall string `json:"profilePictureSmall"`
+}
+
+type AccountBody struct {
+	Code    int     `json:"code"`
+	Data    Account `json:"data"`
+	Message string  `json:"message"`
+}
+
+func accountByWxid(wxid string) Account {
+	var client http.Client
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/api/accountbywxid?wxid=%s", *addr, wxid), nil)
+	if err != nil {
+		log.Fatalf("json Marshal faild: %s\n", err)
+	}
+
+	response, err := client.Do(req)
+	if err != nil {
+		log.Fatalf("client Do faild: %s\n", err)
+	}
+
+	data, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		log.Fatalf("ReadAll faild: %s\n", err)
+	}
+
+	ab := AccountBody{}
+	err = json.Unmarshal(data, &ab)
+	if err != nil {
+		log.Fatalf("Unmarshal faild: %s\n", err)
+	}
+
+	return ab.Data
+}
+
+type Contact struct {
+	CustomAccount       string `json:"customAccount"`
+	EncryptName         string `json:"encryptName"`
+	Nickname            string `json:"nickname"`
+	Note                string `json:"note"`
+	NotePinyin          string `json:"notePinyin"`
+	NotePinyinAll       string `json:"notePinyinAll"`
+	Pinyin              string `json:"pinyin"`
+	PinyinAll           string `json:"pinyinAll"`
+	ProfilePicture      string `json:"profilePicture"`
+	ProfilePictureSmall string `json:"profilePictureSmall"`
+	Reserved1           string `json:"reserved1"`
+	Reserved2           string `json:"reserved2"`
+	Type                string `json:"type"`
+	VerifyFlag          string `json:"verifyFlag"`
+	Wxid                string `json:"wxid"`
+}
+
+type ContactBody struct {
+	Code int `json:"code"`
+	Data struct {
+		Contacts []Contact `json:"contacts"`
+		Total    int       `json:"total"`
+	} `json:"data"`
+	Message string `json:"message"`
+}
+
+func getContacts() {
+	var client http.Client
+
+	req, err := http.NewRequest("GET", *addr+"/api/contacts", nil)
+	if err != nil {
+		log.Fatalf("json Marshal faild: %s\n", err)
+	}
+
+	response, err := client.Do(req)
+	if err != nil {
+		log.Fatalf("client Do faild: %s\n", err)
+	}
+
+	data, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		log.Fatalf("ReadAll faild: %s\n", err)
+	}
+
+	cb := ContactBody{}
+	err = json.Unmarshal(data, &cb)
+	if err != nil {
+		log.Fatalf("Unmarshal faild: %s\n", err)
+	}
+
+	fmt.Printf("data: %+v\n", cb)
+
+	for i := 0; i < cb.Data.Total; i++ {
+		c := accountByWxid(cb.Data.Contacts[i].Wxid)
+		cb.Data.Contacts[i].ProfilePicture = c.ProfilePicture
+		cb.Data.Contacts[i].ProfilePictureSmall = c.ProfilePictureSmall
+	}
+
+	fmt.Printf("%+v\n", cb.Data.Contacts)
+}
+
 var addr = flag.String("addr", "localhost:8080", "Http service address")
-var mode = flag.String("mode", "json-file", "Select the startup mode. The optional values are ws, http, form-img, json-img, form-file and json-file")
+var mode = flag.String("mode", "ws", "Select the startup mode. The optional values are ws, http, form-img, json-img, form-file, json-file and contacts")
 var img_path = flag.String("img", "../public/1.jpg", "Specify image path when sending image messages")
 var file_path = flag.String("file", "../public/1.txt", "Send file message specifying file path")
-var wxid = flag.String("wxid", "47331170911@chatroom", "Send message recipient's wxid")
+var wxid = flag.String("wxid", "", "Send message recipient's wxid")
 
 func main() {
 	flag.Parse()
@@ -321,5 +454,7 @@ func main() {
 		sendFormFile()
 	case "json-file":
 		sendJsonFile()
+	case "contacts":
+		getContacts()
 	}
 }
